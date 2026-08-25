@@ -1,0 +1,239 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{xcolor}
+
+% -----------------------------------------------------
+% bvraghav-tiet-ucs503p-article.sty
+% -----------------------------------------------------
+
+% Variable: Lab Instructor
+\makeatletter \newcommand{\BvrSetLabInstructor}[1]{%
+  \gdef\Bvr@LabInstructor{#1}}
+% default
+\newcommand{\Bvr@LabInstructor}{Dr. Raghav %
+  B. Venkataramaiyer}
+% public accessor
+\newcommand{\BvrLabInstructorValue}{\Bvr@LabInstructor}
+\makeatother
+
+% Add subtitle
+\usepackage{titling}
+% -- Set title bold
+\pretitle{\begin{center}\bfseries\fontsize{18bp}{18bp}\selectfont}
+\makeatletter
+\newcommand{\BvrSubtitle}[1]{%
+  \posttitle{%
+    \par\end{center}
+    \begin{center}\large#1\end{center}
+    \vskip 0.5em}%
+}
+\makeatother
+
+% Hints in the section title(s)
+\newcommand{\BvrHint}[1]{%
+  {\normalfont\normalsize\itshape\hfill #1}}
+
+% -----------------------------------------------------
+
+\title{ResearchAgent: An Autonomous AI Agent for Stock and Company Research}
+
+\BvrSetLabInstructor{Paramveer Ma'am}
+
+\BvrSubtitle{%
+  Project Proposal for UCS503P  \\
+  Submitted to: \BvrLabInstructorValue \\ \bfseries
+  Thapar Institute of Engineering and Technology% 
+}
+
+\author{
+  \begin{tabular}[t]{ccc}
+    Ananya Khanduja, CSED & Garv Sharma, CSED & Vishwa Choudhary, CSED \\
+    \small \texttt{1024030693} & \small \texttt{1024030695} & \small \texttt{1024030668}
+  \end{tabular}
+}
+
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Higher-order goal}
+This project aims to improve access to financial
+information and lower the barrier to informed investing
+by automating the labour-intensive process of company
+research. While the broader motivation is financial
+literacy and democratized access to research tooling,
+the immediate engineering objective is to translate
+\emph{autonomous, tool-using AI agents} into a
+measurable, deployable software solution that produces a
+structured investment brief for any listed company in
+under a minute.
+
+\section{Time-to-value}
+\begin{itemize}[leftmargin=0.7cm]
+    \item We will deliver meaningful increments quickly by prototyping the core agent loop (a single ticker, a single data source) and validating end-to-end report generation within a short iteration window.
+    \item We will prioritize fast feedback over perfection by using weekly iterations and zero-config deployment targets (Render, for both the Go API service and the static React frontend) to reduce release friction.
+    \item Success is defined by what can be delivered and measured in the first iteration -- a working plan-act-synthesize loop for one company -- then improved based on report-quality feedback.
+\end{itemize}
+
+\section{Problem Statement}
+Individual investors and students researching a company or stock face a slow, fragmented process that discourages diligence. Common pain points include:
+\begin{itemize}[leftmargin=0.7cm]
+    \item \textbf{Fragmentation:} financials, news, and qualitative context live on separate sites (screeners, exchanges, news portals), forcing manual cross-referencing.
+    \item \textbf{Cost barriers:} most automated research tools rely on paid financial-data or LLM APIs, which are inaccessible to students and retail investors.
+    \item \textbf{Inconsistent structure:} self-compiled notes rarely follow a consistent, comparable format across companies.
+    \item \textbf{Stale or incomplete data:} manually gathered snapshots quickly go out of date and often omit recent news or risk factors.
+\end{itemize}
+
+\textbf{Why this matters now (contextual relevance):} With free-tier LLMs and public data sources now capable of near-real-time synthesis, a zero-paid-API research agent can meaningfully close the access gap for individual users without institutional data subscriptions.
+
+\section{Proposed Solution}
+\subsection{Overview}
+Build a \textbf{web-based} autonomous research agent, ``ResearchAgent'', with the following components:
+\begin{itemize}[leftmargin=0.7cm]
+    \item \textbf{Company/ticker input portal:} user submits a company name or stock ticker (e.g. \texttt{TCS}, \texttt{BLS}).
+    \item \textbf{Automated ticker resolution:} agent infers the correct NSE/BSE ticker symbol without manual lookup.
+    \item \textbf{Autonomous data gathering:} agent pulls live financial data, web search results, and recent news for the target company.
+    \item \textbf{Structured report synthesis:} agent compiles all gathered context into a consistent, six-section investment brief.
+    \item \textbf{Report viewer:} a dedicated page renders the completed brief per ticker for review and sharing.
+\end{itemize}
+
+\subsection{Core workflow}
+\begin{enumerate}[leftmargin=0.7cm]
+    \item User submits a company name and the agent resolves it to a ticker symbol.
+    \item Agent plans a sequence of research steps (search, financials, news) tailored to that company.
+    \item Agent dispatches tool calls, observes results, and retries with a different query or tool if a source returns insufficient data.
+    \item Agent synthesizes all gathered context into the six-section report and renders it to the user.
+\end{enumerate}
+
+\subsection{Operational constraints for an educational, zero-budget setting}
+\begin{itemize}[leftmargin=0.7cm]
+    \item Rely only on free-tier services: a single LLM API key (Gemini) is the sole required credential.
+    \item Avoid dependence on paid financial-data providers; use a free-tier financial-data API (Twelve Data) as an optional primary source, with public scrapers and RSS feeds as layered fallbacks.
+    \item Design for deployability using zero-config hosting (Render) for both the stateless Go backend and the static React frontend, avoiding any managed database or paid infrastructure.
+\end{itemize}
+
+\section{Solution Approach}
+This is an engineering course project, so we focus on agent orchestration, tool-integration reliability, and system correctness rather than novel model research.
+
+\subsection{Agent orchestration}
+The core agent loop runs entirely inside a single API route and follows a \emph{Plan $\rightarrow$ Act $\rightarrow$ Observe $\rightarrow$ Reflect $\rightarrow$ Synthesise} pattern:
+\begin{itemize}[leftmargin=0.7cm]
+    \item The LLM first generates a step-by-step research plan for the given company.
+    \item The agent dispatches calls to three tools -- search, financials, and news -- based on that plan.
+    \item After each tool call, the agent reflects on whether results are sufficient and retries with an alternate query or tool if not, without claiming guaranteed completeness.
+    \item Gathered context from all tool calls is passed to the LLM for final synthesis into the report.
+\end{itemize}
+
+\subsection{Web architecture}
+A decoupled Go backend and React frontend, communicating over a plain HTTP/JSON API:
+\begin{itemize}[leftmargin=0.7cm]
+    \item \textbf{Frontend:} a responsive UI (React with Vite and TypeScript, Tailwind CSS) for ticker input and report viewing, deployed as a static site independent of the backend.
+    \item \textbf{Backend API:} a Go HTTP server, built on the standard library alone, exposing a core agent route (\texttt{/api/agent}) plus dedicated tool routes for search, financials, and news.
+    \item \textbf{External data sources:} Twelve Data as an optional, documented primary source for financials, with a crumb-authenticated Yahoo Finance quote endpoint and a Screener.in scraper as layered fallbacks; DuckDuckGo HTML search with a Google News RSS fallback for web search; Google News RSS for dedicated news retrieval.
+\end{itemize}
+
+\subsection{Search and data resilience}
+Because the system depends on unofficial/public sources, resilience is built in at the tool level:
+\begin{itemize}[leftmargin=0.7cm]
+    \item Web search attempts DuckDuckGo first, falls back to Google News RSS if rate-limited, and returns an empty result gracefully so the agent can retry rather than fail.
+    \item Financial data resolution attempts Twelve Data first when configured (a single documented API covering both global and NSE/BSE-listed tickers), then falls back through a crumb-authenticated Yahoo Finance quote (with \texttt{.NS}/\texttt{.BO} suffix logic for Indian exchanges), an unauthenticated Yahoo chart endpoint, and finally a Screener.in scrape, returning whichever source succeeds first as a single financial-data object.
+\end{itemize}
+
+\subsection{CI/CD and fast delivery enabler}
+CI/CD will be used to:
+\begin{itemize}[leftmargin=0.7cm]
+    \item Automatically build, vet, and test both the Go backend (\texttt{go build}, \texttt{go vet}, unit tests) and the React frontend (\texttt{tsc}, \texttt{vite build}) on every change.
+    \item Produce repeatable deployment artifacts via Render's zero-config pipelines for a Go web service and a static frontend site.
+    \item Enable safe and frequent releases of incremental features (new report sections, new data sources) across both services independently.
+\end{itemize}
+
+\section{Evaluation Criterion}
+We define success using measurable metrics tied to the core research pipeline.
+
+\subsection{Primary evaluation metric}
+\textbf{Time-to-report (TTR):} time between a user submitting a company name and receiving a complete, six-section report.
+\begin{itemize}[leftmargin=0.7cm]
+    \item Target: median TTR $\le$ 60 seconds for a resolved NSE/BSE ticker.
+    \item Attribution: measured server-side from request receipt to synthesis completion in the \texttt{/api/agent} route.
+\end{itemize}
+
+\subsection{Secondary evaluation metrics}
+\begin{itemize}[leftmargin=0.7cm]
+    \item \textbf{Ticker resolution accuracy:} percentage of company-name inputs correctly resolved to the right NSE/BSE ticker without manual correction.
+    \item \textbf{Data completeness:} percentage of reports where all six sections are populated with non-empty, source-grounded content (no section left blank due to tool failure).
+    \item \textbf{Fallback trigger rate:} frequency with which the search/news fallback path is invoked, as an indicator of primary-source reliability.
+    \item \textbf{Reliability:} availability of the deployed agent endpoint during testing windows (e.g. $\ge$ 99\% uptime on Render free tier).
+\end{itemize}
+
+\subsection{Pilot validation plan}
+\begin{itemize}[leftmargin=0.7cm]
+    \item Run the agent against a curated list of 20--30 companies spanning large-cap, mid-cap, and small-cap NSE/BSE listings.
+    \item Manually spot-check a sample of generated reports against source data (Screener.in, recent news) to validate factual grounding before broader use.
+\end{itemize}
+
+\section{Scalability}
+The proposition should scale in both theoretical and practical senses.
+
+\begin{enumerate}[leftmargin=0.7cm]
+    \item \textbf{Scalable (theoretically):} The system should support growth in concurrent analyses and request volume by:
+    \begin{itemize}[leftmargin=0.7cm]
+        \item decoupling the frontend from the stateless agent API route,
+        \item batching and caching tool responses (financials, news) per ticker to reduce redundant calls,
+        \item keeping each tool call independently retryable and timeout-bounded.
+    \end{itemize}
+    
+    \item \textbf{Operationally deployable (practically):} The system should run entirely on free-tier infrastructure:
+    \begin{itemize}[leftmargin=0.7cm]
+        \item a stateless Go API service and a static React frontend, both hosted on Render's free tier with no managed database to provision,
+        \item a single required LLM credential (Gemini, with OpenRouter as an optional backup path) and optional free-tier keys (Twelve Data, Exa) that gracefully degrade to public scrapers when absent,
+        \item CI/CD pipeline for automatic staging/production deployment of both services on every push.
+    \end{itemize}
+\end{enumerate}
+
+\section{Engine availability heuristic}
+A mature set of ``engines'' (tooling/services) is available to implement this as a web-based project:
+\begin{itemize}[leftmargin=0.7cm]
+    \item Go, using only its standard library, for the backend HTTP API; React with Vite and TypeScript for the frontend.
+    \item Tailwind CSS v4 for a dark-mode-first responsive frontend.
+    \item Google Gemini 2.0 Flash-Lite as the primary LLM, with an OpenRouter-routed Gemini 2.0 Flash wrapper as an optional fallback path.
+    \item Twelve Data as an optional, documented free-tier financial-data API, with a crumb-authenticated Yahoo Finance quote endpoint and a Screener.in scraper as layered fallbacks, none requiring a paid API key.
+    \item DuckDuckGo HTML search and Google News RSS for web search and news, with layered fallback, parsed using Go's standard library.
+    \item Render free tier for zero-config hosting and deployment of both the backend service and the static frontend.
+\end{itemize}
+We will use these mature components to focus on agent orchestration, data-source reliability, and report quality rather than inventing new infrastructure.
+
+\section{Project scope and deliverables}
+\subsection{Initial deliverable}
+\begin{itemize}[leftmargin=0.7cm]
+    \item Company/ticker input form and automated ticker resolution
+    \item Core agent loop: plan generation, single-pass tool dispatch, and synthesis for one company at a time
+    \item Financials tool (Twelve Data as optional primary source, with Yahoo Finance and Screener.in as layered fallbacks) and basic report rendering
+    \item Basic logging and timestamps for time-to-report measurement
+    \item CI: build + route-level tests + linting
+    \item CD to Render staging with a single push-to-deploy pipeline
+\end{itemize}
+
+\subsection{Subsequent deliverables}
+\begin{itemize}[leftmargin=0.7cm]
+    \item Search and news tools with layered fallback (DuckDuckGo, Google News RSS)
+    \item Reflect/retry logic so the agent re-queries when tool results are insufficient
+    \item Full six-section report: overview, financial snapshot, news, competitive landscape, risk factors, and bull/bear investment summary
+    \item Report history/viewer page per ticker and lightweight caching for repeat queries
+\end{itemize}
+
+\section{Risks and mitigations}
+\begin{itemize}[leftmargin=0.7cm]
+    \item \textbf{Unofficial data source instability:} Yahoo Finance's quote endpoint and Screener.in are unofficial/scraped sources that can change or be blocked without notice; mitigate by preferring Twelve Data's documented API when configured, and by layering an unauthenticated Yahoo chart fallback and graceful degradation rather than hard failures on the remaining unofficial paths.
+    \item \textbf{Rate limiting:} DuckDuckGo scraping may be throttled under load; mitigate with the Google News RSS fallback and request pacing.
+    \item \textbf{Hallucinated or unverifiable claims:} LLM synthesis may overstate confidence; mitigate by grounding synthesis strictly in retrieved tool output and clearly labelling the report as informational, not financial advice.
+    \item \textbf{Free-tier quota limits:} Gemini/OpenRouter and Twelve Data free tiers cap request volume (e.g. Twelve Data: 800 requests/day, 8/minute); mitigate by using the OpenRouter fallback path, treating Twelve Data as an optional source with automatic fallback, and caching recent reports.
+\end{itemize}
+
+\section{Summary}
+This project proposes a deployable, zero-paid-API platform -- a Go backend paired with a React frontend -- that autonomously researches a company or stock ticker and produces a structured investment brief. It meets the course criteria by emphasizing time-to-value through rapid, tool-by-tool iteration, implementing CI/CD to support frequent safe releases across both services, and using measurable evaluation criteria (especially time-to-report and data completeness). It remains focused on engineering agent orchestration and data-source reliability rather than research-driven model novelty.
+
+\end{document}
