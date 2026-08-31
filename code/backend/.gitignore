@@ -1,0 +1,14 @@
+# Go
+analyst-agent-go/bin
+analyst-agent-go/.env
+
+# Node / Vite
+analyst-agent-web/node_modules
+analyst-agent-web/.env
+
+# Common
+*.local
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json
