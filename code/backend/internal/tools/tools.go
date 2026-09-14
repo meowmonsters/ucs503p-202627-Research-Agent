@@ -1,7 +1,5 @@
 // Package tools holds the individual data-fetching tools (search,
-// financials, news) that the agent will eventually call. Only "search" is
-// implemented so far — financials and news get added once their own
-// sources are wired up.
+// financials, news) that the agent will eventually call.
 package tools
 
 import (
@@ -38,6 +36,21 @@ var Definitions = []ToolDefinition{
 			{Name: "query", Type: "string", Description: "The search query to look up"},
 		},
 	},
+	{
+		Name: types.ToolFinancials,
+		Description: "Get financial data for a publicly traded company using its " +
+			"stock ticker symbol. Returns price, market cap, P/E ratio, and revenue.",
+		Parameters: []ToolParameter{
+			{Name: "ticker", Type: "string", Description: "The stock ticker symbol (e.g., AAPL for Apple, MSFT for Microsoft)"},
+		},
+	},
+	{
+		Name:        types.ToolNews,
+		Description: "Get the latest news headlines about a company from Google News.",
+		Parameters: []ToolParameter{
+			{Name: "company", Type: "string", Description: "The company name to search news for"},
+		},
+	},
 }
 
 // Call dispatches to the named tool by name.
@@ -45,6 +58,10 @@ func Call(tool types.ToolName, args map[string]string) types.ToolResult {
 	switch tool {
 	case types.ToolSearch:
 		return Search(args["query"])
+	case types.ToolFinancials:
+		return Financials(args["ticker"])
+	case types.ToolNews:
+		return News(args["company"])
 	default:
 		return types.ToolResult{
 			Tool:    tool,

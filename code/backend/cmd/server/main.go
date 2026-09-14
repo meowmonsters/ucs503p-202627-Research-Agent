@@ -1,3 +1,7 @@
+// Command server is the ResearchAgent backend. This is the Week 1
+// skeleton: just enough to confirm the server boots and responds. The real
+// routes (/api/agent, /api/tools/*) get added once the agent loop and
+// tools exist.
 package main
 
 import (
