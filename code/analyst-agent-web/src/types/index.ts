@@ -1,7 +1,4 @@
-// Shared types mirroring the backend's current data shapes. Only "search"
-// is a real tool so far — financials and news get added once the backend
-// implements them, and agent/report types get added once the agent loop
-// exists.
+// Shared types mirroring the backend's current data shapes.
 
 export interface SearchResult {
   title: string;
@@ -16,6 +13,10 @@ export interface FinancialData {
   change: number | null;
   changePercent: number | null;
   currency: string;
+  marketCap: string | null;
+  peRatio: number | null;
+  dividendYield: number | null;
+  revenue: string | null;
 }
 
 export interface NewsItem {
@@ -25,11 +26,62 @@ export interface NewsItem {
   url: string;
 }
 
-export type ToolName = "search";
+export type ToolName = "search" | "financials" | "news";
 
 export interface ToolResult {
   tool: ToolName;
   success: boolean;
   data: SearchResult[] | FinancialData | NewsItem[] | null;
+  error?: string;
+}
+
+// --- Agent types ---
+
+export interface ToolCall {
+  tool: ToolName;
+  args: Record<string, string>;
+  reasoning: string;
+}
+
+export type AgentStepType =
+  | "plan"
+  | "tool_call"
+  | "tool_result"
+  | "reflection"
+  | "synthesis"
+  | "error";
+
+export interface AgentStep {
+  id: number;
+  type: AgentStepType;
+  content: string;
+  toolCall?: ToolCall;
+  toolResult?: ToolResult;
+  timestamp: number;
+}
+
+// --- Report types ---
+
+export interface ReportSection {
+  title: string;
+  icon: string;
+  content: string;
+}
+
+export interface ResearchReport {
+  company: string;
+  generatedAt: string;
+  sections: ReportSection[];
+  overallSentiment: "Bullish" | "Neutral" | "Bearish";
+}
+
+// --- Streaming / message types ---
+
+export type AgentMessageType = "step" | "report" | "error" | "done";
+
+export interface AgentMessage {
+  type: AgentMessageType;
+  step?: AgentStep;
+  report?: ResearchReport;
   error?: string;
 }
