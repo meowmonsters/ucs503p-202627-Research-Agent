@@ -1,0 +1,28 @@
+# Week 3 : News and Financials Tools
+
+This week, I worked on adding two more data sources to the backend: news
+and financial data.
+
+## What I did
+
+- Built the news tool (`internal/tools/news.go`), which fetches the latest
+  headlines about a company from Google News.
+- Built the financials tool (`internal/tools/financials.go`), which looks
+  up a stock ticker and returns its price, market cap, P/E ratio, and
+  revenue.
+- For financials, set it up to try Yahoo Finance first, and fall back to
+  scraping Screener.in for Indian company tickers if Yahoo doesn't have the
+  data.
+- Added a small backup list of hard-coded data for a couple of well-known
+  tickers, just in case both live sources fail at the same time.
+- Extended the shared data types to include the extra financial fields
+  (market cap, P/E ratio, dividend yield, revenue) that weren't needed
+  before this tool existed.
+- Wired both new tools into the dispatcher so they can be called the same
+  way the search tool already is.
+- Tested both tools directly with a few real companies and tickers to
+  confirm they return sensible data.
+
+At this stage, all three tools (search, news, financials) work on their
+own, but none of them are connected to an AI agent yet — that's still
+coming later.
