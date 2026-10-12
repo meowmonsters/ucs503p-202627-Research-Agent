@@ -13,13 +13,25 @@ import (
 	"analystagent/internal/types"
 )
 
-// Search looks up a query on the web. It tries DuckDuckGo's HTML endpoint
-// first (with a couple of retries), and falls back to Google News RSS if
-// that fails entirely — DuckDuckGo scraping is inherently a bit fragile
+// Search looks up a query on the web. If EXA_API_KEY is configured, it
+// tries Exa first (a higher-quality but paid-beyond-free-tier source).
+// Otherwise — or if Exa comes back empty — it scrapes DuckDuckGo's HTML
+// endpoint (with a couple of retries), and falls back to Google News RSS
+// if that fails entirely. DuckDuckGo scraping is inherently a bit fragile
 // since it depends on markup that isn't a documented, stable API.
 func Search(query string) types.ToolResult {
 	if query == "" {
 		return types.ToolResult{Tool: types.ToolSearch, Success: false, Data: nil, Error: "Invalid search query parameter"}
+	}
+
+	if exaAPIKey() != "" {
+		if results, err := exaSearch(query, 5, ""); err == nil && len(results) > 0 {
+			out := make([]types.SearchResult, 0, len(results))
+			for _, r := range results {
+				out = append(out, types.SearchResult{Title: r.Title, URL: r.URL, Snippet: r.Snippet})
+			}
+			return types.ToolResult{Tool: types.ToolSearch, Success: true, Data: out}
+		}
 	}
 
 	if results, err := duckDuckGoSearchWithRetry(query, 2); err == nil {

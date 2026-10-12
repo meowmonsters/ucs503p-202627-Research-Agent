@@ -195,6 +195,13 @@ func fetchYahooQuote(ticker string) (*types.FinancialData, error) {
 	}
 
 	meta := parsed.Chart.Result[0].Meta
+	if meta.RegularMarketPrice == 0 {
+		// A "successful" response with no actual price isn't useful to a
+		// caller — treat it as a failure so the orchestration below falls
+		// through to the next source instead of returning an empty quote.
+		return nil, fmt.Errorf("yahoo finance returned no price for %s", ticker)
+	}
+
 	prevClose := meta.PreviousClose
 	if prevClose == 0 {
 		prevClose = meta.ChartPreviousClose
@@ -239,6 +246,17 @@ func Financials(rawTicker string) types.ToolResult {
 	}
 
 	cleanTicker := nonTickerCharRe.ReplaceAllString(strings.ToUpper(ticker), "")
+
+	// Twelve Data first, if configured — a documented, stable API that
+	// covers both global and NSE/BSE-listed tickers. Entirely optional: if
+	// no key is set, or the call fails for any reason, this falls straight
+	// through to the existing chain below exactly as before.
+	if twelveDataAPIKey() != "" {
+		if quote, err := fetchTwelveDataQuote(cleanTicker); err == nil {
+			return types.ToolResult{Tool: types.ToolFinancials, Success: true, Data: *quote}
+		}
+	}
+
 	isIndianHint := strings.Contains(cleanTicker, ".NS") || strings.Contains(cleanTicker, ".BO")
 
 	if isIndianHint {

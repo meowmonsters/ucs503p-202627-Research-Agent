@@ -9,10 +9,36 @@ import (
 	"analystagent/internal/types"
 )
 
-// News fetches the latest headlines about a company from Google News RSS.
+// News fetches the latest headlines about a company. If EXA_API_KEY is
+// configured, it tries Exa's news category first; otherwise — or if Exa
+// returns nothing — it falls back to Google News RSS.
 func News(company string) types.ToolResult {
 	if company == "" {
 		return types.ToolResult{Tool: types.ToolNews, Success: false, Data: nil, Error: "Missing or invalid 'company' parameter"}
+	}
+
+	if exaAPIKey() != "" {
+		if results, err := exaSearch(company, 8, "news"); err == nil && len(results) > 0 {
+			out := make([]types.NewsItem, 0, len(results))
+			for _, r := range results {
+				source := "Exa"
+				if r.URL != "" {
+					if u, err := url.Parse(r.URL); err == nil && u.Hostname() != "" {
+						source = strings.TrimPrefix(u.Hostname(), "www.")
+					} else if r.Author != "" {
+						source = r.Author
+					}
+				} else if r.Author != "" {
+					source = r.Author
+				}
+				date := r.PublishedDate
+				if date == "" {
+					date = time.Now().UTC().Format(time.RFC3339)
+				}
+				out = append(out, types.NewsItem{Title: r.Title, Date: date, Source: source, URL: r.URL})
+			}
+			return types.ToolResult{Tool: types.ToolNews, Success: true, Data: out}
+		}
 	}
 
 	rssURL := "https://news.google.com/rss/search?q=" + url.QueryEscape(company) + "&hl=en-IN&gl=IN&ceid=IN:en"

@@ -53,6 +53,26 @@ var Definitions = []ToolDefinition{
 	},
 }
 
+// DescriptionsForPrompt renders every tool's name, description, and
+// parameters as plain text, for the agent to include in its system prompt
+// so the LLM knows what tools it can call.
+func DescriptionsForPrompt() string {
+	out := ""
+	for i, t := range Definitions {
+		if i > 0 {
+			out += "\n"
+		}
+		out += "- **" + string(t.Name) + "**: " + t.Description + "\n  Parameters: "
+		for j, p := range t.Parameters {
+			if j > 0 {
+				out += ", "
+			}
+			out += p.Name + " (" + p.Type + "): " + p.Description
+		}
+	}
+	return out
+}
+
 // Call dispatches to the named tool by name.
 func Call(tool types.ToolName, args map[string]string) types.ToolResult {
 	switch tool {
