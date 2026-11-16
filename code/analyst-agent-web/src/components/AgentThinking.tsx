@@ -20,9 +20,9 @@ export function AgentThinking({ steps, isRunning }: AgentThinkingProps) {
   }, [steps.length]);
 
   return (
-    <div className="w-full max-w-3xl mx-auto px-4 py-12 font-sans">
-      <div className="bg-[#050505] border border-[#111] p-8">
-        <div className="flex items-center gap-3 mb-8 border-b border-[#111] pb-6">
+    <div className="w-full max-w-3xl mx-auto px-4 py-6 sm:py-12 font-sans">
+      <div className="bg-[#050505] border border-[#111] p-4 sm:p-8">
+        <div className="flex items-center gap-3 mb-6 sm:mb-8 border-b border-[#111] pb-4 sm:pb-6">
           <span
             className={`w-2 h-2 rounded-full ${isRunning ? "bg-[#FF5B22] animate-pulse" : "bg-white/20"}`}
           />
@@ -31,10 +31,10 @@ export function AgentThinking({ steps, isRunning }: AgentThinkingProps) {
           </h2>
         </div>
 
-        <div ref={scrollRef} className="space-y-6 max-h-[60vh] overflow-y-auto pr-2">
+        <div ref={scrollRef} className="space-y-5 sm:space-y-6 max-h-[60vh] overflow-y-auto pr-1 sm:pr-2">
           {steps.map((step) => (
-            <div key={step.id} className="flex items-start gap-6">
-              <div className="text-[9px] font-bold text-[#333] pt-1 min-w-[56px] tabular-nums">
+            <div key={step.id} className="flex items-start gap-3 sm:gap-6">
+              <div className="text-[9px] font-bold text-[#555] pt-1 min-w-[48px] sm:min-w-[56px] tabular-nums">
                 {new Date(step.timestamp).toLocaleTimeString([], {
                   hour: "2-digit",
                   minute: "2-digit",
@@ -42,8 +42,8 @@ export function AgentThinking({ steps, isRunning }: AgentThinkingProps) {
                   hour12: false,
                 })}
               </div>
-              <div className="flex-1 border-l border-[#111] pl-6">
-                <p className="text-sm text-[#AAA] leading-relaxed">{step.content}</p>
+              <div className="flex-1 min-w-0 border-l border-[#111] pl-3 sm:pl-6">
+                <p className="text-sm text-[#AAA] leading-relaxed break-words">{step.content}</p>
                 {step.toolCall && (
                   <div className="mt-3">
                     <ToolCallBadge tool={step.toolCall.tool} />
@@ -54,9 +54,9 @@ export function AgentThinking({ steps, isRunning }: AgentThinkingProps) {
           ))}
 
           {isRunning && (
-            <div className="flex items-center gap-6 opacity-30">
-              <div className="text-[9px] font-bold text-[#222] min-w-[56px]">--:--:--</div>
-              <div className="flex-1 border-l border-[#111] pl-6">
+            <div className="flex items-center gap-3 sm:gap-6 opacity-30">
+              <div className="text-[9px] font-bold text-[#222] min-w-[48px] sm:min-w-[56px]">--:--:--</div>
+              <div className="flex-1 border-l border-[#111] pl-3 sm:pl-6">
                 <span className="text-[9px] font-black text-[#333] uppercase tracking-[0.3em]">
                   Waiting...
                 </span>

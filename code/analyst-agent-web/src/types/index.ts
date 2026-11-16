@@ -17,6 +17,7 @@ export interface FinancialData {
   peRatio: number | null;
   dividendYield: number | null;
   revenue: string | null;
+  source: string;
 }
 
 export interface NewsItem {
