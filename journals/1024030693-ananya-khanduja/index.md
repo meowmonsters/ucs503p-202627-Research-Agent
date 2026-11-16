@@ -1,8 +1,13 @@
-# Ananya's Journal
+# Frontend Journals — Ananya Khanduja
 
-Roll No. 1024030693 Name: Ananya Khanduja
+Project: **ResearchAgent: An Autonomous AI Agent for Stock and Company Research**  
+Student ID: **1024030693**
 
-- [W1 : Project Setup and Frontend Integration](w1-project-setup.md)
-- [W2 : Frontend Foundation and API Preparation](w2-frontend-foundation.md)
-- [W3 : Frontend Landing Page and Routing](w3-frontend-landing-routing.md)
-- [W4 : Agent UI and Frontend Data Types](w4-agent-ui-and-types.md)
+## Weekly entries
+
+- [Week 3 — Frontend foundation and routing](w3-frontend-foundation.md)
+- [Week 4 — Agent thinking UI and shared types](w4-agent-thinking-ui.md)
+- [Week 5 — Frontend report page and API integration](w5-frontend-report-api-integration.md)
+- [Week 6 — Frontend documentation and polish](w6-frontend-docs-responsive-polish.md)
+
+> Keep the Week 3 and Week 4 filenames above if those are the names already present in your repository. If your existing journal files use different names, retain those existing links and add only the Week 5 and Week 6 entries.
