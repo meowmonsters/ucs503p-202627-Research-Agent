@@ -19,6 +19,9 @@ type FinancialData struct {
 	PERatio       *float64 `json:"peRatio"`
 	DividendYield *float64 `json:"dividendYield"`
 	Revenue       string   `json:"revenue"`
+	// Source says where the figures came from (e.g. "Yahoo Finance"), so
+	// a reader can tell a live quote from a fallback.
+	Source string `json:"source"`
 }
 
 type NewsItem struct {

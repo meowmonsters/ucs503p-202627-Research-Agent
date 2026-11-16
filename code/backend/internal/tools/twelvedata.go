@@ -126,5 +126,6 @@ func fetchTwelveDataQuote(cleanTicker string) (*types.FinancialData, error) {
 		Currency:      currency,
 		MarketCap:     "N/A",
 		Revenue:       "N/A",
+		Source:        "Twelve Data",
 	}, nil
 }

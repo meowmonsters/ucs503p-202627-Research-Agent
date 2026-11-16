@@ -82,11 +82,14 @@ func callDirectGemini(systemPrompt string, history []ConversationMessage) (strin
 		return "", err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, geminiAPIURL+"?key="+apiKey, bytes.NewReader(reqBytes))
+	// The key goes in a header, not the URL: Go's HTTP errors include the
+	// full URL, so a key in the query string would leak into logs.
+	req, err := http.NewRequest(http.MethodPost, geminiAPIURL, bytes.NewReader(reqBytes))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", apiKey)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

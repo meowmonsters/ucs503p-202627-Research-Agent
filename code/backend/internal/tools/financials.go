@@ -5,28 +5,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"analystagent/internal/types"
 )
-
-// knownTickers maps a few common company names to their ticker symbol, so
-// a user can type "Infosys" instead of having to know it's "INFY.NS".
-var knownTickers = map[string]string{
-	"infosys":   "INFY.NS",
-	"tcs":       "TCS.NS",
-	"reliance":  "RELIANCE.NS",
-	"wipro":     "WIPRO.NS",
-	"hcl":       "HCLTECH.NS",
-	"apple":     "AAPL",
-	"tesla":     "TSLA",
-	"microsoft": "MSFT",
-	"google":    "GOOGL",
-	"amazon":    "AMZN",
-	"alphabet":  "GOOGL",
-}
 
 type mockFinancial struct {
 	price, change, changePercent, peRatio, dividendYield float64
@@ -41,6 +27,15 @@ var mockData = map[string]mockFinancial{
 }
 
 func ptr(f float64) *float64 { return &f }
+
+// nonZero returns nil for zero, so "the page had no value" is reported as
+// unknown rather than as a real zero.
+func nonZero(f float64) *float64 {
+	if f == 0 {
+		return nil
+	}
+	return &f
+}
 
 func commaFormat(f float64) string {
 	whole := int64(f)
@@ -78,7 +73,7 @@ func extractMetric(html, name string) (float64, bool) {
 
 func fetchScreenerData(ticker string) *types.FinancialData {
 	symbol := strings.ToUpper(strings.SplitN(ticker, ".", 2)[0])
-	targetURL := "https://www.screener.in/company/" + symbol + "/"
+	targetURL := "https://www.screener.in/company/" + url.PathEscape(symbol) + "/"
 
 	req, err := http.NewRequest(http.MethodGet, targetURL, nil)
 	if err != nil {
@@ -133,16 +128,17 @@ func fetchScreenerData(ticker string) *types.FinancialData {
 	}
 
 	return &types.FinancialData{
-		Ticker:        symbol,
-		CompanyName:   symbol,
-		Currency:      "INR",
-		Price:         ptr(currentPrice),
-		Change:        ptr(0),
-		ChangePercent: ptr(0),
+		Ticker:      symbol,
+		CompanyName: symbol,
+		Currency:    "INR",
+		// Screener.in's page has no day-change figure. Leave it unknown
+		// (nil) instead of claiming a change of exactly zero.
+		Price:         nonZero(currentPrice),
 		MarketCap:     marketCap,
-		PERatio:       ptr(peRatio),
-		DividendYield: ptr(divYield),
+		PERatio:       nonZero(peRatio),
+		DividendYield: nonZero(divYield),
 		Revenue:       revenue,
+		Source:        "Screener.in",
 	}
 }
 
@@ -164,7 +160,7 @@ type yahooChartResponse struct {
 }
 
 func fetchYahooQuote(ticker string) (*types.FinancialData, error) {
-	endpoint := "https://query1.finance.yahoo.com/v8/finance/chart/" + ticker
+	endpoint := "https://query1.finance.yahoo.com/v8/finance/chart/" + url.PathEscape(ticker)
 
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -186,6 +182,11 @@ func fetchYahooQuote(ticker string) (*types.FinancialData, error) {
 		return nil, fmt.Errorf("yahoo finance returned status %d", resp.StatusCode)
 	}
 
+	return quoteFromYahooChart(bodyBytes, ticker)
+}
+
+// quoteFromYahooChart turns a Yahoo chart response body into a quote.
+func quoteFromYahooChart(bodyBytes []byte, ticker string) (*types.FinancialData, error) {
 	var parsed yahooChartResponse
 	if err := json.Unmarshal(bodyBytes, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to parse yahoo finance response: %w", err)
@@ -206,10 +207,12 @@ func fetchYahooQuote(ticker string) (*types.FinancialData, error) {
 	if prevClose == 0 {
 		prevClose = meta.ChartPreviousClose
 	}
-	change := meta.RegularMarketPrice - prevClose
-	var changePercent float64
+	// With no previous close the day's change is unknown. (It used to be
+	// computed against zero, which reported the whole price as the change.)
+	var change, changePercent *float64
 	if prevClose != 0 {
-		changePercent = (change / prevClose) * 100
+		c := meta.RegularMarketPrice - prevClose
+		change, changePercent = ptr(c), ptr(c/prevClose*100)
 	}
 
 	name := meta.LongName
@@ -224,58 +227,134 @@ func fetchYahooQuote(ticker string) (*types.FinancialData, error) {
 		Ticker:        ticker,
 		CompanyName:   name,
 		Price:         ptr(meta.RegularMarketPrice),
-		Change:        ptr(change),
-		ChangePercent: ptr(changePercent),
+		Change:        change,
+		ChangePercent: changePercent,
 		Currency:      meta.Currency,
+		Source:        "Yahoo Finance",
 	}, nil
 }
 
 // --- Orchestration ---
 
-var nonTickerCharRe = regexp.MustCompile(`[^A-Z0-9.]`)
+// The three live sources are variables so tests can swap in fakes and check
+// the ordering without any network access.
+var (
+	fetchTwelveData = fetchTwelveDataQuote
+	fetchYahoo      = fetchYahooQuote
+	fetchScreener   = fetchScreenerData
+)
 
+func isMissing(s string) bool { return s == "" || s == "N/A" }
+
+// hasFundamentals reports whether a quote already carries the
+// fundamentals (market cap, P/E) that price-only sources don't provide.
+func hasFundamentals(d *types.FinancialData) bool {
+	return !isMissing(d.MarketCap) && d.PERatio != nil
+}
+
+// mergeFundamentals fills gaps in dst from src without overwriting
+// anything dst already has, and records src as an additional source if it
+// contributed anything.
+func mergeFundamentals(dst, src *types.FinancialData) {
+	merged := false
+	if isMissing(dst.MarketCap) && !isMissing(src.MarketCap) {
+		dst.MarketCap, merged = src.MarketCap, true
+	}
+	if dst.PERatio == nil && src.PERatio != nil {
+		dst.PERatio, merged = src.PERatio, true
+	}
+	if dst.DividendYield == nil && src.DividendYield != nil {
+		dst.DividendYield, merged = src.DividendYield, true
+	}
+	if isMissing(dst.Revenue) && !isMissing(src.Revenue) {
+		dst.Revenue, merged = src.Revenue, true
+	}
+	if merged && src.Source != "" {
+		dst.Source += " + " + src.Source
+	}
+}
+
+// fetchLiveQuote returns a real-time price from the first source that
+// works: Twelve Data (only if a key is configured), then Yahoo Finance.
+func fetchLiveQuote(cleanTicker string) *types.FinancialData {
+	if twelveDataAPIKey() != "" {
+		if q, err := fetchTwelveData(cleanTicker); err == nil {
+			return q
+		}
+	}
+	if q, err := fetchYahoo(cleanTicker); err == nil {
+		return q
+	}
+	return nil
+}
+
+// sampleDataAllowed gates the hard-coded demo figures. They are NOT live
+// data, so they are off unless explicitly enabled (ALLOW_SAMPLE_DATA=1),
+// which is only meant for offline demos.
+func sampleDataAllowed() bool { return os.Getenv("ALLOW_SAMPLE_DATA") == "1" }
+
+// Financials looks up financial data for a ticker or well-known company
+// name. Order of preference:
+//
+//  1. A live price from Twelve Data (if keyed) or Yahoo Finance.
+//  2. For Indian listings, Screener.in then fills in the fundamentals
+//     (market cap, P/E, dividend yield, revenue) the price sources lack.
+//  3. If no live price source works, Screener.in alone (price and
+//     fundamentals, but no day-change figure).
+//  4. Sample data, only if explicitly enabled.
+//
+// If nothing works it returns a failure, so the caller reports the data as
+// missing instead of inventing it.
 func Financials(rawTicker string) types.ToolResult {
+	rawTicker = strings.TrimSpace(rawTicker)
 	if rawTicker == "" {
 		return types.ToolResult{Tool: types.ToolFinancials, Success: false, Data: nil, Error: "Invalid ticker identifier"}
 	}
 
-	ticker := rawTicker
-	lowerCaseName := strings.ToLower(strings.TrimSpace(rawTicker))
-	if mapped, ok := knownTickers[lowerCaseName]; ok {
-		ticker = mapped
+	// Work out what the input can be used as: a known company, a ticker, or
+	// (symbol == "") only a name that has to be looked up.
+	in := interpretTicker(rawTicker)
+	symbol := in.Symbol
+
+	var quote *types.FinancialData
+	if symbol != "" {
+		quote = fetchLiveQuote(symbol)
 	}
 
-	cleanTicker := nonTickerCharRe.ReplaceAllString(strings.ToUpper(ticker), "")
-
-	// Twelve Data first, if configured — a documented, stable API that
-	// covers both global and NSE/BSE-listed tickers. Entirely optional: if
-	// no key is set, or the call fails for any reason, this falls straight
-	// through to the existing chain below exactly as before.
-	if twelveDataAPIKey() != "" {
-		if quote, err := fetchTwelveDataQuote(cleanTicker); err == nil {
-			return types.ToolResult{Tool: types.ToolFinancials, Success: true, Data: *quote}
+	// The direct attempt failed (or the input was not ticker-shaped, e.g.
+	// "Nvidia Corporation" or "Nestlé"): treat it as a company name and
+	// search for its symbol. Skipped for the known-company table, whose
+	// entries were chosen precisely so no guessing is needed.
+	if quote == nil && !in.Known {
+		if resolved, err := lookupSymbol(rawTicker); err == nil && resolved != symbol {
+			if q := fetchLiveQuote(resolved); q != nil {
+				// Say so, since a name match can be wrong (e.g. "Delta").
+				q.Source += fmt.Sprintf(" (matched %q to %s)", rawTicker, resolved)
+				quote, symbol = q, resolved
+			}
 		}
 	}
 
-	isIndianHint := strings.Contains(cleanTicker, ".NS") || strings.Contains(cleanTicker, ".BO")
+	cleanTicker := symbol
+	isIndian := strings.HasSuffix(cleanTicker, ".NS") || strings.HasSuffix(cleanTicker, ".BO")
 
-	if isIndianHint {
-		if data := fetchScreenerData(cleanTicker); data != nil {
-			return types.ToolResult{Tool: types.ToolFinancials, Success: true, Data: *data}
+	if quote != nil {
+		if isIndian && !hasFundamentals(quote) {
+			if s := fetchScreener(cleanTicker); s != nil {
+				mergeFundamentals(quote, s)
+			}
 		}
+	} else if cleanTicker != "" {
+		// No live price source worked. Screener.in can still supply a price
+		// (and works for Indian symbols typed without a suffix).
+		quote = fetchScreener(cleanTicker)
 	}
 
-	if quote, err := fetchYahooQuote(cleanTicker); err == nil {
+	if quote != nil {
 		return types.ToolResult{Tool: types.ToolFinancials, Success: true, Data: *quote}
 	}
 
-	// Yahoo failed -> try Screener as a general fallback, regardless of
-	// the .NS/.BO hint.
-	if data := fetchScreenerData(cleanTicker); data != nil {
-		return types.ToolResult{Tool: types.ToolFinancials, Success: true, Data: *data}
-	}
-
-	if mock, ok := mockData[cleanTicker]; ok {
+	if mock, ok := mockData[cleanTicker]; ok && sampleDataAllowed() {
 		currency := "USD"
 		if strings.HasSuffix(cleanTicker, ".NS") {
 			currency = "INR"
@@ -294,6 +373,7 @@ func Financials(rawTicker string) types.ToolResult {
 				PERatio:       ptr(mock.peRatio),
 				DividendYield: ptr(mock.dividendYield),
 				Revenue:       mock.revenue,
+				Source:        "Sample data (not live)",
 			},
 		}
 	}
@@ -302,6 +382,7 @@ func Financials(rawTicker string) types.ToolResult {
 		Tool:    types.ToolFinancials,
 		Success: false,
 		Data:    nil,
-		Error:   fmt.Sprintf("Financial pipeline failure: no data available for %s", cleanTicker),
+		Error: fmt.Sprintf("No financial data found for %q. It may not be a listed company; "+
+			"try its ticker symbol (for example AAPL, BRK-B or INFY.NS).", rawTicker),
 	}
 }

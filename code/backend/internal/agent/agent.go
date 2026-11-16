@@ -1,24 +1,58 @@
 // Package agent runs the actual research loop: it asks the LLM to plan,
 // calls tools based on what the LLM decides it needs, feeds the results
 // back, and eventually asks the LLM to synthesize everything into a final
-// report. If the LLM is ever unavailable (no credentials, rate limited,
-// etc.), it falls back to a deterministic report built directly from the
-// tools' raw data, so a result still comes back either way.
+// report.
+//
+// Two rules keep the report grounded in real data:
+//   - the model may not write a report until at least one tool has
+//     actually returned data, and
+//   - if no tool returned data (or the model is unavailable), a
+//     deterministic report is built from whatever was retrieved, with
+//     every missing section explicitly marked as unavailable.
 package agent
 
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"analystagent/internal/llm"
 	"analystagent/internal/tools"
 	"analystagent/internal/types"
 )
 
-const maxSteps = 8
+const (
+	maxSteps           = 8
+	maxToolResultChars = 3000
+	notAvailable       = "Not available from the retrieved data."
+)
+
+// runBudget caps how long the research loop may keep gathering data. It is
+// checked between steps, so the last LLM or tool call can overrun it; the
+// HTTP server's write timeout leaves room for that. When it runs out the
+// agent stops researching and writes the report from what it has.
+// Override with RUN_BUDGET_SECONDS.
+var runBudget = defaultRunBudget()
+
+func defaultRunBudget() time.Duration {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("RUN_BUDGET_SECONDS"))); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return 90 * time.Second
+}
+
+// The LLM and tool entry points are variables so tests can run the loop
+// with fakes, without network access.
+var (
+	callLLM  = llm.CallGemini
+	callTool = tools.Call
+)
 
 var validTools = map[types.ToolName]bool{
 	types.ToolSearch:     true,
@@ -39,6 +73,10 @@ func createSystemPrompt(company string) string {
 3. After each tool result, decide whether you have enough to write the
    report, or whether you need another tool call.
 4. Once you have enough, synthesize.
+
+## Rules
+- Only state figures and facts that appear in a tool result. Never fill gaps from memory.
+- If a tool returns an error or no results, try different parameters or another tool.
 
 ## Response format — respond with ONLY one JSON object, no markdown fences:
 
@@ -63,11 +101,15 @@ const synthesisPrompt = `Write the final investment report as ONLY one JSON obje
     {"title": "Company Overview", "icon": "OVERVIEW", "content": "- point 1\n- point 2\n- point 3"},
     {"title": "Financial Snapshot", "icon": "FINANCIALS", "content": "- point 1\n- point 2\n- point 3"},
     {"title": "Recent News", "icon": "NEWS", "content": "- point 1\n- point 2"},
-    {"title": "Risks", "icon": "RISK", "content": "- point 1\n- point 2"},
+    {"title": "Competitive Landscape", "icon": "COMPETITION", "content": "- point 1\n- point 2"},
+    {"title": "Risk Factors", "icon": "RISK", "content": "- point 1\n- point 2"},
     {"title": "Investment Summary", "icon": "SUMMARY", "content": "- bull case\n- bear case\n- verdict"}
   ]
 }
-Use only information gathered from the tool calls above — don't invent figures. Each section's content should be 2-5 bullet points, one per line, prefixed with "- ".`
+Rules:
+- Use only information from the tool results above. Do not invent figures.
+- If the tool results do not support a section, write exactly one bullet: "- Not available from the retrieved data." instead of guessing.
+- Each section's content is 2-5 bullet points, one per line, prefixed with "- ".`
 
 // Gemini doesn't always follow the "no markdown fences" instruction —
 // strip a ```json ... ``` wrapper if present before parsing, and fall back
@@ -91,113 +133,276 @@ func parseJSON(text string) (map[string]any, bool) {
 	return out, true
 }
 
-// stepEmitter tracks the auto-incrementing step ID across the run.
+// normalizeSentiment maps whatever the model wrote onto the three values
+// the frontend knows how to display.
+func normalizeSentiment(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "bullish":
+		return "Bullish"
+	case "bearish":
+		return "Bearish"
+	default:
+		return "Neutral"
+	}
+}
+
+// truncate shortens s to at most max bytes without ever cutting a
+// multi-byte character in half (which would produce invalid UTF-8 — and
+// company names and headlines are not always ASCII).
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…(truncated)"
+}
+
+// --- Step log ---
+
+// stepEmitter numbers each step and forwards it as an AgentMessage.
 type stepEmitter struct {
 	stepID int
 	emit   func(types.AgentMessage)
 }
 
-func (s *stepEmitter) step(stepType types.AgentStepType, content string, extra *types.AgentStep) {
+func (s *stepEmitter) add(stepType types.AgentStepType, content string, call *types.ToolCall, result *types.ToolResult) {
 	s.stepID++
-	step := types.AgentStep{
-		ID:        s.stepID,
-		Type:      stepType,
-		Content:   content,
-		Timestamp: time.Now().UnixMilli(),
-	}
-	if extra != nil {
-		step.ToolCall = extra.ToolCall
-		step.ToolResult = extra.ToolResult
-	}
-	s.emit(types.AgentMessage{Type: types.MsgStep, Step: &step})
+	s.emit(types.AgentMessage{
+		Type: types.MsgStep,
+		Step: &types.AgentStep{
+			ID:         s.stepID,
+			Type:       stepType,
+			Content:    content,
+			ToolCall:   call,
+			ToolResult: result,
+			Timestamp:  time.Now().UnixMilli(),
+		},
+	})
 }
 
-// runDeterministicFallback builds a report directly from the tools' raw
-// data, with no LLM involved, for when the LLM is unavailable entirely.
-func runDeterministicFallback(company string, se *stepEmitter) {
-	se.step(types.StepReflection, "LLM unavailable. Switching to deterministic research mode.", nil)
+// --- Collected data ---
 
-	searchCall := types.ToolCall{Tool: types.ToolSearch, Args: map[string]string{"query": company + " company overview"}, Reasoning: "Gather baseline context."}
-	se.step(types.StepToolCall, searchCall.Reasoning, &types.AgentStep{ToolCall: &searchCall})
-	searchResult := tools.Call(types.ToolSearch, searchCall.Args)
-	se.step(types.StepToolResult, fmt.Sprintf("SEARCH success=%v", searchResult.Success), &types.AgentStep{ToolResult: &searchResult})
+// collected holds the most recent usable result from each tool.
+type collected struct {
+	search     []types.SearchResult
+	financials *types.FinancialData
+	news       []types.NewsItem
+}
 
-	financialCall := types.ToolCall{Tool: types.ToolFinancials, Args: map[string]string{"ticker": company}, Reasoning: "Resolve financial data."}
-	se.step(types.StepToolCall, financialCall.Reasoning, &types.AgentStep{ToolCall: &financialCall})
-	financialResult := tools.Call(types.ToolFinancials, financialCall.Args)
-	se.step(types.StepToolResult, fmt.Sprintf("FINANCIALS success=%v", financialResult.Success), &types.AgentStep{ToolResult: &financialResult})
-
-	newsCall := types.ToolCall{Tool: types.ToolNews, Args: map[string]string{"company": company}, Reasoning: "Pull recent headlines."}
-	se.step(types.StepToolCall, newsCall.Reasoning, &types.AgentStep{ToolCall: &newsCall})
-	newsResult := tools.Call(types.ToolNews, newsCall.Args)
-	se.step(types.StepToolResult, fmt.Sprintf("NEWS success=%v", newsResult.Success), &types.AgentStep{ToolResult: &newsResult})
-
-	companyName := company
-	sections := []types.ReportSection{
-		{Title: "Company Overview", Icon: "OVERVIEW", Content: "- Built from raw tool data; the LLM was unavailable for this run."},
+// record stores a tool result and reports whether it actually carried data.
+// A call can "succeed" yet return nothing (e.g. an empty search result when
+// every source was unreachable), and that must not count as evidence.
+func (c *collected) record(result types.ToolResult) bool {
+	if !result.Success {
+		return false
 	}
+	switch d := result.Data.(type) {
+	case []types.SearchResult:
+		if len(d) > 0 {
+			c.search = d
+			return true
+		}
+	case []types.NewsItem:
+		if len(d) > 0 {
+			c.news = d
+			return true
+		}
+	case types.FinancialData:
+		v := d
+		c.financials = &v
+		return true
+	}
+	return false
+}
 
-	if financialResult.Success {
-		if fd, ok := financialResult.Data.(types.FinancialData); ok {
-			if fd.CompanyName != "" {
-				companyName = fd.CompanyName
+func describeResult(tool types.ToolName, result types.ToolResult, gotData bool) string {
+	name := strings.ToUpper(string(tool))
+	switch {
+	case !result.Success:
+		return fmt.Sprintf("%s error: %s", name, result.Error)
+	case !gotData:
+		return fmt.Sprintf("%s returned no results.", name)
+	default:
+		return fmt.Sprintf("%s data acquired.", name)
+	}
+}
+
+// fetch calls a tool as one logged step pair (call + result) and records
+// anything useful it returned.
+func (c *collected) fetch(se *stepEmitter, call types.ToolCall) {
+	se.add(types.StepToolCall, call.Reasoning, &call, nil)
+	result := callTool(call.Tool, call.Args)
+	gotData := c.record(result)
+	se.add(types.StepToolResult, describeResult(call.Tool, result, gotData), nil, &result)
+}
+
+// --- Deterministic report ---
+
+// fmtNum formats a figure for the report. Sub-dollar prices (penny stocks,
+// crypto such as SHIB-USD) keep enough decimals not to show as "0.00".
+func fmtNum(p *float64) string {
+	if p == nil {
+		return "n/a"
+	}
+	digits := 2
+	switch abs := math.Abs(*p); {
+	case abs == 0:
+	case abs < 0.01:
+		digits = 6
+	case abs < 1:
+		digits = 4
+	}
+	return strconv.FormatFloat(*p, 'f', digits, 64)
+}
+
+func orNA(s string) string {
+	if s == "" || s == "N/A" {
+		return "n/a"
+	}
+	return s
+}
+
+func clip(s string, n int) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) <= n {
+		return string(r)
+	}
+	return string(r[:n]) + "…"
+}
+
+func bullets(lines []string) string {
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		out = append(out, "- "+l)
+	}
+	return strings.Join(out, "\n")
+}
+
+// buildFallbackReport assembles a report straight from retrieved data. It
+// always returns all six sections; anything that needs the AI model's
+// judgment (competition, risks, the verdict) is explicitly marked
+// unavailable rather than left out or invented.
+func buildFallbackReport(company string, c *collected) types.ResearchReport {
+	name := company
+
+	overview := []string{"No overview information could be retrieved."}
+	if len(c.search) > 0 {
+		overview = nil
+		for i, r := range c.search {
+			if i >= 3 {
+				break
 			}
-			sections = append(sections, types.ReportSection{
-				Title:   "Financial Snapshot",
-				Icon:    "FINANCIALS",
-				Content: fmt.Sprintf("- Ticker: %s\n- Currency: %s\n- Market cap: %s", fd.Ticker, fd.Currency, fd.MarketCap),
-			})
+			overview = append(overview, fmt.Sprintf("%s: %s", clip(r.Title, 80), clip(r.Snippet, 160)))
 		}
 	}
 
-	if newsResult.Success {
-		if items, ok := newsResult.Data.([]types.NewsItem); ok && len(items) > 0 {
-			var lines []string
-			for i, n := range items {
-				if i >= 3 {
-					break
-				}
-				lines = append(lines, "- "+n.Title)
+	financial := []string{"Financial data could not be retrieved."}
+	if fd := c.financials; fd != nil {
+		if fd.CompanyName != "" {
+			name = fd.CompanyName
+		}
+		price := "n/a"
+		if fd.Price != nil {
+			price = fmt.Sprintf("%s %s", fmtNum(fd.Price), fd.Currency)
+			if fd.ChangePercent != nil {
+				price += fmt.Sprintf(" (%s%% today)", fmtNum(fd.ChangePercent))
 			}
-			sections = append(sections, types.ReportSection{Title: "Recent News", Icon: "NEWS", Content: strings.Join(lines, "\n")})
+		}
+		financial = []string{
+			fmt.Sprintf("%s (%s)", fd.CompanyName, fd.Ticker),
+			"Price: " + price,
+			"Market cap: " + orNA(fd.MarketCap),
+			"P/E ratio: " + fmtNum(fd.PERatio),
+			"Dividend yield: " + fmtNum(fd.DividendYield),
+			"Revenue: " + orNA(fd.Revenue),
+			"Source: " + orNA(fd.Source),
 		}
 	}
 
-	report := types.ResearchReport{
-		Company:          companyName,
-		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+	news := []string{"No recent headlines could be retrieved."}
+	if len(c.news) > 0 {
+		news = nil
+		for i, n := range c.news {
+			if i >= 5 {
+				break
+			}
+			news = append(news, fmt.Sprintf("%s (%s)", clip(n.Title, 140), n.Source))
+		}
+	}
+
+	needsModel := func(what string) []string {
+		return []string{notAvailable + " " + what + " needs the AI model, which was not used for this report."}
+	}
+
+	return types.ResearchReport{
+		Company:     name,
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		// No sentiment judgment was made; "Neutral" here means "not assessed".
 		OverallSentiment: "Neutral",
-		Sections:         sections,
+		Sections: []types.ReportSection{
+			{Title: "Company Overview", Icon: "OVERVIEW", Content: bullets(overview)},
+			{Title: "Financial Snapshot", Icon: "FINANCIALS", Content: bullets(financial)},
+			{Title: "Recent News", Icon: "NEWS", Content: bullets(news)},
+			{Title: "Competitive Landscape", Icon: "COMPETITION", Content: bullets(needsModel("Competitor analysis"))},
+			{Title: "Risk Factors", Icon: "RISK", Content: bullets(needsModel("Risk analysis"))},
+			{Title: "Investment Summary", Icon: "SUMMARY", Content: bullets(append(needsModel("A bull/bear verdict"), "No sentiment assessment was made."))},
+		},
+	}
+}
+
+// runDeterministicFallback fetches whichever tools haven't produced data
+// yet, then emits a report built only from retrieved data.
+func runDeterministicFallback(company string, se *stepEmitter, c *collected, reason string) {
+	se.add(types.StepReflection, reason+" Switching to deterministic research mode.", nil, nil)
+
+	if c.search == nil {
+		c.fetch(se, types.ToolCall{Tool: types.ToolSearch, Args: map[string]string{"query": company + " company overview"}, Reasoning: "Gather baseline context."})
+	}
+	if c.financials == nil {
+		c.fetch(se, types.ToolCall{Tool: types.ToolFinancials, Args: map[string]string{"ticker": company}, Reasoning: "Resolve financial data."})
+	}
+	if c.news == nil {
+		c.fetch(se, types.ToolCall{Tool: types.ToolNews, Args: map[string]string{"company": company}, Reasoning: "Pull recent headlines."})
 	}
 
-	se.step(types.StepSynthesis, "Deterministic report assembled.", nil)
+	report := buildFallbackReport(company, c)
+	se.add(types.StepSynthesis, "Deterministic report assembled from retrieved data only.", nil, nil)
 	se.emit(types.AgentMessage{Type: types.MsgReport, Report: &report})
 	se.emit(types.AgentMessage{Type: types.MsgDone})
 }
+
+// --- The loop ---
 
 // Run executes the research loop for the given company, calling emit once
 // per AgentMessage in order.
 func Run(company string, emit func(types.AgentMessage)) {
 	se := &stepEmitter{emit: emit}
+	data := &collected{}
 	systemPrompt := createSystemPrompt(company)
 	var history []llm.ConversationMessage
 
-	se.step(types.StepPlan, fmt.Sprintf("Starting research on %s...", company), nil)
+	se.add(types.StepPlan, fmt.Sprintf("Starting research on %s...", company), nil, nil)
 
-	initialPrompt := fmt.Sprintf(`Research "%s". Identify the correct stock ticker if one isn't given. Start with a short plan.`, company)
-	history = append(history, llm.ConversationMessage{Role: "user", Text: initialPrompt})
+	history = append(history, llm.ConversationMessage{
+		Role: "user",
+		Text: fmt.Sprintf(`Research "%s". Identify the correct stock ticker if one isn't given. Start with a short plan.`, company),
+	})
 
 	llmFailed := false
-	iterations := 0
-	for iterations < maxSteps {
-		iterations++
+	usefulResults := 0 // tool calls that returned real data
 
-		history = append(history, llm.ConversationMessage{
-			Role: "user",
-			Text: `Continue. Respond with the next action's JSON.`,
-		})
+	deadline := time.Now().Add(runBudget)
+	for iterations := 0; iterations < maxSteps; iterations++ {
+		if time.Now().After(deadline) {
+			se.add(types.StepReflection, "Time budget for research reached — wrapping up with what was gathered.", nil, nil)
+			break
+		}
+		history = append(history, llm.ConversationMessage{Role: "user", Text: `Continue. Respond with the next action's JSON.`})
 
-		response, err := llm.CallGemini(systemPrompt, history)
+		response, err := callLLM(systemPrompt, history)
 		if err != nil {
 			llmFailed = true
 			break
@@ -206,17 +411,24 @@ func Run(company string, emit func(types.AgentMessage)) {
 
 		actionData, ok := parseJSON(response)
 		if !ok {
-			se.step(types.StepError, "Could not parse the model's response. Retrying.", nil)
+			se.add(types.StepError, "Could not parse the model's response. Retrying.", nil, nil)
 			history = append(history, llm.ConversationMessage{Role: "user", Text: "That wasn't valid JSON. Respond with only the JSON object."})
 			continue
 		}
 
 		action, _ := actionData["action"].(string)
 
+		if action == "synthesize" {
+			if usefulResults == 0 && iterations < maxSteps-1 {
+				se.add(types.StepReflection, "No data gathered yet — continuing research.", nil, nil)
+				history = append(history, llm.ConversationMessage{Role: "user", Text: "You have not retrieved any data yet. Call at least one tool before synthesizing."})
+				continue
+			}
+			se.add(types.StepSynthesis, "Enough information gathered. Writing the report.", nil, nil)
+			break
+		}
+
 		switch action {
-		case "synthesize":
-			se.step(types.StepSynthesis, "Enough information gathered. Writing the report.", nil)
-			iterations = maxSteps // exit the loop cleanly
 		case "tool_call":
 			toolName := types.ToolName(fmt.Sprintf("%v", actionData["tool"]))
 			reasoning, _ := actionData["reasoning"].(string)
@@ -228,46 +440,69 @@ func Run(company string, emit func(types.AgentMessage)) {
 			}
 
 			if !validTools[toolName] {
-				se.step(types.StepError, "Model requested an unknown tool: "+string(toolName), nil)
+				se.add(types.StepError, "Model requested an unknown tool: "+string(toolName), nil, nil)
 				history = append(history, llm.ConversationMessage{Role: "user", Text: "Unknown tool. Valid tools: search, financials, news."})
 				continue
 			}
 
-			toolCall := types.ToolCall{Tool: toolName, Args: args, Reasoning: reasoning}
-			se.step(types.StepToolCall, reasoning, &types.AgentStep{ToolCall: &toolCall})
+			call := types.ToolCall{Tool: toolName, Args: args, Reasoning: reasoning}
+			se.add(types.StepToolCall, reasoning, &call, nil)
 
-			result := tools.Call(toolName, args)
-			se.step(types.StepToolResult, fmt.Sprintf("%s success=%v", strings.ToUpper(string(toolName)), result.Success), &types.AgentStep{ToolResult: &result})
+			result := callTool(toolName, args)
+			gotData := data.record(result)
+			se.add(types.StepToolResult, describeResult(toolName, result, gotData), nil, &result)
 
-			dataJSON, _ := json.Marshal(result.Data)
-			history = append(history, llm.ConversationMessage{
-				Role: "user",
-				Text: fmt.Sprintf("Tool result: %s", string(dataJSON)),
-			})
+			switch {
+			case gotData:
+				usefulResults++
+				dataJSON, _ := json.Marshal(result.Data)
+				history = append(history, llm.ConversationMessage{Role: "user", Text: "Tool result: " + truncate(string(dataJSON), maxToolResultChars)})
+			case !result.Success:
+				// Tell the model *why* it failed — it can't adjust otherwise.
+				history = append(history, llm.ConversationMessage{Role: "user", Text: "Tool error: " + result.Error + ". Try different parameters or another tool."})
+			default:
+				history = append(history, llm.ConversationMessage{Role: "user", Text: "The tool returned no results. Try different parameters or another tool."})
+			}
 		case "reflect":
 			assessment, _ := actionData["assessment"].(string)
-			se.step(types.StepReflection, assessment, nil)
+			se.add(types.StepReflection, assessment, nil, nil)
 		default:
-			se.step(types.StepReflection, "Processing...", nil)
+			se.add(types.StepReflection, "Processing...", nil, nil)
 		}
 	}
 
 	if llmFailed {
-		runDeterministicFallback(company, se)
+		runDeterministicFallback(company, se, data, "The AI model was unavailable.")
+		return
+	}
+	if usefulResults == 0 {
+		runDeterministicFallback(company, se, data, "No tool returned usable data, so a report will not be written from the model's memory alone.")
 		return
 	}
 
 	history = append(history, llm.ConversationMessage{Role: "user", Text: synthesisPrompt})
-	synthesisResponse, err := llm.CallGemini(systemPrompt, history)
+	synthesisResponse, err := callLLM(systemPrompt, history)
 	if err != nil {
-		runDeterministicFallback(company, se)
+		runDeterministicFallback(company, se, data, "The AI model was unavailable for the final report.")
 		return
 	}
 
-	reportData, ok := parseJSON(synthesisResponse)
-	if !ok || reportData["sections"] == nil {
-		runDeterministicFallback(company, se)
+	report, ok := parseReport(company, synthesisResponse)
+	if !ok {
+		runDeterministicFallback(company, se, data, "The model's final report could not be parsed.")
 		return
+	}
+
+	se.emit(types.AgentMessage{Type: types.MsgReport, Report: &report})
+	se.emit(types.AgentMessage{Type: types.MsgDone})
+}
+
+// parseReport turns the model's synthesis JSON into a ResearchReport. It
+// reports false if there are no usable sections.
+func parseReport(company, text string) (types.ResearchReport, bool) {
+	reportData, ok := parseJSON(text)
+	if !ok {
+		return types.ResearchReport{}, false
 	}
 
 	report := types.ResearchReport{
@@ -275,32 +510,28 @@ func Run(company string, emit func(types.AgentMessage)) {
 		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
 		OverallSentiment: "Neutral",
 	}
-	if c, ok := reportData["company"].(string); ok && c != "" {
+	if c, ok := reportData["company"].(string); ok && strings.TrimSpace(c) != "" {
 		report.Company = c
 	}
-	if s, ok := reportData["overallSentiment"].(string); ok && s != "" {
-		report.OverallSentiment = s
-	}
-	if sections, ok := reportData["sections"].([]any); ok {
-		for _, raw := range sections {
-			secMap, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			sec := types.ReportSection{}
-			if v, ok := secMap["title"].(string); ok {
-				sec.Title = v
-			}
-			if v, ok := secMap["icon"].(string); ok {
-				sec.Icon = v
-			}
-			if v, ok := secMap["content"].(string); ok {
-				sec.Content = v
-			}
-			report.Sections = append(report.Sections, sec)
-		}
+	if s, ok := reportData["overallSentiment"].(string); ok {
+		report.OverallSentiment = normalizeSentiment(s)
 	}
 
-	se.emit(types.AgentMessage{Type: types.MsgReport, Report: &report})
-	se.emit(types.AgentMessage{Type: types.MsgDone})
+	sections, _ := reportData["sections"].([]any)
+	for _, raw := range sections {
+		secMap, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		sec := types.ReportSection{}
+		sec.Title, _ = secMap["title"].(string)
+		sec.Icon, _ = secMap["icon"].(string)
+		sec.Content, _ = secMap["content"].(string)
+		if strings.TrimSpace(sec.Title) == "" || strings.TrimSpace(sec.Content) == "" {
+			continue
+		}
+		report.Sections = append(report.Sections, sec)
+	}
+
+	return report, len(report.Sections) > 0
 }

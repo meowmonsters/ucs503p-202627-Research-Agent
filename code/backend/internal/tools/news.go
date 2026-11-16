@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 	"time"
@@ -52,16 +53,10 @@ func News(company string) types.ToolResult {
 		return types.ToolResult{Tool: types.ToolNews, Success: false, Data: nil, Error: fmt.Sprintf("News fetch failed: status %d", resp.StatusCode)}
 	}
 
-	bodyBytes := make([]byte, 0)
-	buf := make([]byte, 8192)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			bodyBytes = append(bodyBytes, buf[:n]...)
-		}
-		if readErr != nil {
-			break
-		}
+	// Bounded read: a feed is a few hundred KB at most.
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return types.ToolResult{Tool: types.ToolNews, Success: false, Data: nil, Error: fmt.Sprintf("News fetch failed: %v", err)}
 	}
 	xmlStr := string(bodyBytes)
 
