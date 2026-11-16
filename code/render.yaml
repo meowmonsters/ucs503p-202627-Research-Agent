@@ -1,0 +1,52 @@
+# Render Blueprint: deploys both services from this repo.
+# Dashboard -> New -> Blueprint -> pick this repository. Render asks for the
+# variables marked `sync: false` (secrets / URLs that don't belong in git).
+# Step-by-step instructions and the order to do things in: README.md.
+
+services:
+  # --- Backend: Go API --------------------------------------------------------
+  - type: web
+    name: researchagent-api
+    runtime: go
+    rootDir: analyst-agent-go
+    buildCommand: go build -o bin/server ./cmd/server
+    startCommand: ./bin/server
+    healthCheckPath: /healthz
+    plan: free
+    envVars:
+      # Without it the API still works but returns the plain, data-only report.
+      - key: GEMINI_API_KEY
+        sync: false
+      # The frontend's URL, e.g. https://researchagent-web.onrender.com
+      # (no trailing path). Anything else is blocked by the browser.
+      - key: ALLOWED_ORIGIN
+        sync: false
+      # Optional extras — leave empty to skip. See analyst-agent-go/.env.example.
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: TWELVEDATA_API_KEY
+        sync: false
+      - key: EXA_API_KEY
+        sync: false
+      # PORT is provided by Render; the server reads it.
+
+  # --- Frontend: static React site -------------------------------------------
+  - type: web
+    name: researchagent-web
+    runtime: static
+    rootDir: analyst-agent-web
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      # The backend's URL, e.g. https://researchagent-api.onrender.com
+      # Baked in at build time: after changing it, redeploy the site.
+      - key: VITE_API_URL
+        sync: false
+      - key: NODE_VERSION
+        value: "20"
+    routes:
+      # Single-page app: any path (e.g. /report/AAPL) must serve index.html,
+      # otherwise refreshing a report page returns a 404.
+      - type: rewrite
+        source: /*
+        destination: /index.html

@@ -1,9 +1,12 @@
 # Go
+analyst-agent-go/server
 analyst-agent-go/bin
 analyst-agent-go/.env
 
 # Node / Vite
 analyst-agent-web/node_modules
+analyst-agent-web/dist
+analyst-agent-web/dist-ssr
 analyst-agent-web/.env
 
 # Common
@@ -12,3 +15,4 @@ analyst-agent-web/.env
 .idea
 .vscode/*
 !.vscode/extensions.json
+*.tsbuildinfo

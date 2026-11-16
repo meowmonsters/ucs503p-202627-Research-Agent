@@ -21,24 +21,15 @@ export default function Home() {
   };
 
   return (
-<<<<<<< HEAD
-    <main className="min-h-screen bg-black flex flex-col text-white font-sans bg-[url('/src/imgs/')] bg-cover bg-center">
-      <nav className="flex items-center justify-between px-8 py-6 border-b border-[#111]">
-=======
     <main className="min-h-screen bg-black flex flex-col text-white font-sans">
       <nav className="flex items-center justify-between px-4 sm:px-8 py-5 sm:py-6 border-b border-[#111]">
->>>>>>> 675dcb8 (feat: add report page and connect to backend)
         <div className="flex items-center gap-1">
           <span className="font-bold text-lg tracking-tighter text-[#FF5B22]">RESEARCH</span>
           <span className="font-light text-lg tracking-tighter text-[#888]">AGENT</span>
         </div>
       </nav>
 
-<<<<<<< HEAD
-      <section className="flex-1 flex flex-col items-center justify-center max-w-5xl mx-auto px-6 text-center py-24 bg-gray-900/30 backdrop-blur-sm">
-=======
       <section className="flex-1 w-full flex flex-col items-center justify-center max-w-5xl mx-auto px-4 sm:px-6 text-center py-12 sm:py-24">
->>>>>>> 675dcb8 (feat: add report page and connect to backend)
         <div className="inline-block px-3 py-1 mb-8 border border-[#222] rounded-full">
           <span className="text-[10px] font-bold uppercase tracking-[0.25em] text-[#FF5B22]">
             Autonomous Pipeline
