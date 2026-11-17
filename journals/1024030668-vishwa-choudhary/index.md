@@ -5,3 +5,5 @@ Name: Vishwa Choudhary
 +  [W2 : Web Search Tool](./w2-Search-Tool.md)
 +  [W3 : News and Financials Tools](./w3-News-and-Financial-Tools)
 +  [W4 : Twelve Data, Exa, and a Stronger Financials Fallback](./w4-work.md)
++  [W5 : Financials Bug-Fix Pass](./w5-work.md)
++  [W6 : Testing Across Companies and Fixing Edge Cases](./w6-work.md)
