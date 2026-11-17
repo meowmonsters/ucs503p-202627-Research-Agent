@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -245,5 +246,24 @@ func TestFmtNumKeepsSmallPricesReadable(t *testing.T) {
 		if got := fmtNum(c.in); got != c.want {
 			t.Errorf("fmtNum = %q, want %q", got, c.want)
 		}
+	}
+}
+
+func TestFallbackStepSaysWhyTheModelFailed(t *testing.T) {
+	withFakes(t,
+		func(string, []llm.ConversationMessage) (string, error) {
+			return "", errors.New("Gemini API error (404): models/gemini-2.0-flash-lite is no longer available")
+		},
+		func(tool types.ToolName, args map[string]string) types.ToolResult {
+			return types.ToolResult{Tool: tool, Success: false, Error: "down"}
+		})
+	var joined string
+	for _, m := range runAndCollect("Acme") {
+		if m.Type == types.MsgStep {
+			joined += m.Step.Content + "\n"
+		}
+	}
+	if !strings.Contains(joined, "404") || !strings.Contains(joined, "no longer available") {
+		t.Errorf("the step log should carry the model error, got:\n%s", joined)
 	}
 }

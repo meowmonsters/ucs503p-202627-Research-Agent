@@ -38,7 +38,9 @@ All configuration is by environment variable (see `.env.example`).
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `GEMINI_API_KEY` | — | Enables the AI-written report. Without it the fallback report is used. |
+| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Gemini model to call. Models get retired — see Troubleshooting. |
 | `OPENROUTER_API_KEY` | — | Backup LLM, tried once if the Gemini call fails. |
+| `OPENROUTER_MODEL` | `google/gemini-3.5-flash-lite` | Model id used for the backup call. |
 | `TWELVEDATA_API_KEY` | — | Preferred live-price source. |
 | `EXA_API_KEY` | — | Preferred search/news source. |
 | `PORT` | `8080` | Port to listen on (Render sets this for you). |
@@ -178,8 +180,12 @@ after a quiet period can take about a minute while it wakes up.
 - **Browser says "could not reach the backend" / CORS error** — set
   `ALLOWED_ORIGIN` to the exact frontend URL (scheme and host, no path).
 - **Reports say "Not available… needs the AI model"** — the model wasn't
-  used: `GEMINI_API_KEY` is missing/invalid or the quota is exhausted. The
-  step log in the response says why the agent switched modes.
+  used, so you are looking at the data-only report. The step log (and the
+  server log) now says why, e.g. `Gemini API error (404): … is no longer
+  available`. Usual causes: `GEMINI_API_KEY` missing or invalid; quota
+  exhausted; or **the model has been retired** — Google shut down the
+  `gemini-2.0-*` models on 1 June 2026. Set `GEMINI_MODEL` to a current model
+  from <https://ai.google.dev/gemini-api/docs/deprecations> and restart.
 - **Price is missing or marked "Sample data"** — every live source failed
   for that ticker. Try the exchange-suffixed form (`INFY.NS`, `RELIANCE.BO`).
 - **"No financial data found for …"** — the name did not match a listed

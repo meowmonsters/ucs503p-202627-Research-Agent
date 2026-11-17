@@ -15,10 +15,29 @@ import (
 )
 
 const (
-	geminiAPIURL     = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent"
+	geminiAPIBase    = "https://generativelanguage.googleapis.com/v1beta/models/"
 	openRouterAPIURL = "https://openrouter.ai/api/v1/chat/completions"
-	openRouterModel  = "google/gemini-2.0-flash-001"
+
+	// Google retires Gemini models on a schedule (gemini-2.0-flash and
+	// -flash-lite were shut down on 1 June 2026, after which every call
+	// fails). These defaults are only a starting point: override them with
+	// GEMINI_MODEL / OPENROUTER_MODEL rather than editing code. Current
+	// names: https://ai.google.dev/gemini-api/docs/deprecations
+	defaultGeminiModel     = "gemini-3.5-flash-lite"
+	defaultOpenRouterModel = "google/gemini-3.5-flash-lite"
 )
+
+func envOr(name, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// geminiURL is the generateContent endpoint for the configured model.
+func geminiURL() string {
+	return geminiAPIBase + envOr("GEMINI_MODEL", defaultGeminiModel) + ":generateContent"
+}
 
 // ConversationMessage is one turn in the conversation sent to the model.
 // Role is "user" or "model".
@@ -84,7 +103,7 @@ func callDirectGemini(systemPrompt string, history []ConversationMessage) (strin
 
 	// The key goes in a header, not the URL: Go's HTTP errors include the
 	// full URL, so a key in the query string would leak into logs.
-	req, err := http.NewRequest(http.MethodPost, geminiAPIURL, bytes.NewReader(reqBytes))
+	req, err := http.NewRequest(http.MethodPost, geminiURL(), bytes.NewReader(reqBytes))
 	if err != nil {
 		return "", err
 	}
@@ -163,7 +182,7 @@ func callOpenRouter(systemPrompt string, history []ConversationMessage) (string,
 	}
 
 	reqBody, err := json.Marshal(openRouterRequest{
-		Model:       openRouterModel,
+		Model:       envOr("OPENROUTER_MODEL", defaultOpenRouterModel),
 		Messages:    messages,
 		Temperature: 0.4,
 		MaxTokens:   2048,
@@ -224,9 +243,9 @@ func CallGemini(systemPrompt string, history []ConversationMessage) (string, err
 
 	text, orErr := callOpenRouter(systemPrompt, history)
 	if orErr != nil {
-		// Neither provider worked — surface the original Gemini error,
-		// since that's the primary path.
-		return "", err
+		// Neither provider worked — report both, since a dead backup model
+		// is as useful to know about as a dead primary.
+		return "", fmt.Errorf("%v; OpenRouter backup also failed: %v", err, orErr)
 	}
 	return text, nil
 }

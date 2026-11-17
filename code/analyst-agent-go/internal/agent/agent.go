@@ -14,6 +14,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"regexp"
@@ -144,6 +145,19 @@ func normalizeSentiment(s string) string {
 	default:
 		return "Neutral"
 	}
+}
+
+// llmReason turns a model error into a short suffix for the step log, e.g.
+// " (Gemini API error (404): models/... is no longer available)", and logs
+// the full error. Without this, a retired model name or a bad key looks
+// identical to "no key set" and the only symptom is empty report sections.
+func llmReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	log.Printf("LLM call failed: %v", err)
+	msg := strings.Join(strings.Fields(err.Error()), " ")
+	return " (" + truncate(msg, 300) + ")"
 }
 
 // truncate shortens s to at most max bytes without ever cutting a
@@ -392,6 +406,7 @@ func Run(company string, emit func(types.AgentMessage)) {
 	})
 
 	llmFailed := false
+	var llmErr error
 	usefulResults := 0 // tool calls that returned real data
 
 	deadline := time.Now().Add(runBudget)
@@ -405,6 +420,7 @@ func Run(company string, emit func(types.AgentMessage)) {
 		response, err := callLLM(systemPrompt, history)
 		if err != nil {
 			llmFailed = true
+			llmErr = err
 			break
 		}
 		history = append(history, llm.ConversationMessage{Role: "model", Text: response})
@@ -472,7 +488,7 @@ func Run(company string, emit func(types.AgentMessage)) {
 	}
 
 	if llmFailed {
-		runDeterministicFallback(company, se, data, "The AI model was unavailable.")
+		runDeterministicFallback(company, se, data, "The AI model was unavailable"+llmReason(llmErr)+".")
 		return
 	}
 	if usefulResults == 0 {
@@ -483,7 +499,7 @@ func Run(company string, emit func(types.AgentMessage)) {
 	history = append(history, llm.ConversationMessage{Role: "user", Text: synthesisPrompt})
 	synthesisResponse, err := callLLM(systemPrompt, history)
 	if err != nil {
-		runDeterministicFallback(company, se, data, "The AI model was unavailable for the final report.")
+		runDeterministicFallback(company, se, data, "The AI model was unavailable for the final report"+llmReason(err)+".")
 		return
 	}
 
